@@ -1,10 +1,14 @@
 """Train a StarDist 2D model on the PanNuke dataset."""
+
 from __future__ import annotations
 
 import argparse
 
+import numpy as np
 from stardist import fill_label_holes
 from stardist.models import Config2D, StarDist2D
+
+np.float = float  # NOQA
 
 from data import CELL_TYPES, load_fold
 
@@ -18,10 +22,11 @@ TRAIN_EPOCHS = 200
 STEPS_PER_EPOCH = 100
 BATCH_SIZE = 4
 LEARNING_RATE = 3e-4
-USE_GPU = False  # set True when CUDA is available
+USE_GPU = True  # set True when CUDA is available
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _fill_holes(Y: list) -> list:
     return [fill_label_holes(y) for y in Y]
@@ -33,11 +38,12 @@ def _concat(a: list, b: list) -> list:
 
 # ── Model builder ─────────────────────────────────────────────────────────────
 
+
 def build_model(use_classes: bool = USE_CLASSES) -> StarDist2D:
     conf = Config2D(
         n_rays=N_RAYS,
-        n_channel_in=3,          # RGB input
-        grid=(2, 2),             # output stride
+        n_channel_in=3,  # RGB input
+        grid=(2, 2),  # output stride
         n_classes=N_CLASSES if use_classes else None,
         use_gpu=USE_GPU,
         train_epochs=TRAIN_EPOCHS,
@@ -49,6 +55,7 @@ def build_model(use_classes: bool = USE_CLASSES) -> StarDist2D:
 
 
 # ── Training entry point ──────────────────────────────────────────────────────
+
 
 def train(
     use_classes: bool = USE_CLASSES,
@@ -62,7 +69,9 @@ def train(
     X2, Y2, C2 = load_fold("fold2", use_classes=use_classes, max_samples=max_samples)
 
     print("Loading fold3 (validation)...")
-    X_val, Y_val, C_val = load_fold("fold3", use_classes=use_classes, max_samples=max_samples)
+    X_val, Y_val, C_val = load_fold(
+        "fold3", use_classes=use_classes, max_samples=max_samples
+    )
 
     X_tr = _concat(X1, X2)
     Y_tr = _fill_holes(_concat(Y1, Y2))
@@ -83,13 +92,15 @@ def train(
     if use_classes:
         # Pass class maps via `classes` kwarg; validation data as 3-tuple
         model.train(
-            X_tr, Y_tr,
+            X_tr,
+            Y_tr,
             validation_data=(X_val, Y_val, C_val),
             classes=C_tr,
         )
     else:
         model.train(
-            X_tr, Y_tr,
+            X_tr,
+            Y_tr,
             validation_data=(X_val, Y_val),
         )
 

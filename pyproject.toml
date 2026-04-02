@@ -3,7 +3,7 @@ name = "stardist-skripsi"
 version = "0.1.0"
 description = "StarDist nucleus segmentation trained on PanNuke"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.9,<3.10"
 dependencies = [
     "stardist",
     "tensorflow>=2.10",
@@ -13,6 +13,10 @@ dependencies = [
     "tifffile",
     "tqdm",
     "Pillow",
+    "numba>=0.56.0",
+    "gputools>=0.3.1",
+    "scikit-tensor-py3>=0.2.1",
+    "siphash24>=1.8",
 ]
 
 [project.scripts]

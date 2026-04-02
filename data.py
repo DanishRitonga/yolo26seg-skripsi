@@ -40,6 +40,16 @@ def build_instance_map(
     return instance_map
 
 
+def build_class_dict(categories: list[int]) -> dict[int, int]:
+    """
+    Build a dictionary mapping instance ID to class ID.
+    Values are 1-indexed to match the instance map; 0 = background.
+    """
+    # enumerate(start=1) perfectly matches the instance IDs generated
+    # in your build_instance_map function.
+    return {idx: int(cat) + 1 for idx, cat in enumerate(categories, start=1)}
+
+
 def build_class_map(
     instances: list,
     categories: list[int],
@@ -64,7 +74,7 @@ def load_fold(
     fold_name: str,
     use_classes: bool = True,
     max_samples: int | None = None,
-) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray] | None]:
+) -> tuple[list[np.ndarray], list[np.ndarray], list[dict[int, int]] | None]:
     """
     Load and preprocess one PanNuke fold from Hugging Face.
 
@@ -85,7 +95,7 @@ def load_fold(
 
     X: list[np.ndarray] = []
     Y: list[np.ndarray] = []
-    C: list[np.ndarray] | None = [] if use_classes else None
+    C: list[dict[int, int]] | None = [] if use_classes else None
 
     for sample in tqdm(split, desc=fold_name, unit="img"):
         img = np.array(sample["image"]).astype(np.float32)  # (H, W, 3)
@@ -100,6 +110,6 @@ def load_fold(
         X.append(img_norm)
         Y.append(inst_map)
         if use_classes:
-            C.append(build_class_map(instances, categories))  # type: ignore[union-attr]
+            C.append(build_class_dict(categories))  # type: ignore[union-attr]
 
     return X, Y, C
