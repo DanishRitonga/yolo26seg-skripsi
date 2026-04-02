@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import collections
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -36,6 +37,11 @@ def predict(
         labels:  (H, W) int32 instance label map.
         details: Dict containing 'coord', 'points', 'prob', and optionally 'class_id'.
     """
+    if prob_thresh is not None and not (0 < prob_thresh < 1):
+        raise ValueError(f"prob_thresh must be in (0, 1), got {prob_thresh}")
+    if nms_thresh is not None and not (0 < nms_thresh < 1):
+        raise ValueError(f"nms_thresh must be in (0, 1), got {nms_thresh}")
+
     if model is None:
         model = load_model()
 
@@ -92,5 +98,11 @@ if __name__ == "__main__":
 
     if args.output:
         from tifffile import imwrite
+        n_instances = int(labels.max())
+        if n_instances > np.iinfo(np.uint16).max:
+            warnings.warn(
+                f"{n_instances} instances detected but uint16 max is "
+                f"{np.iinfo(np.uint16).max}; instance IDs will be truncated in the output TIFF."
+            )
         imwrite(args.output, labels.astype(np.uint16))
         print(f"Saved → {args.output}")

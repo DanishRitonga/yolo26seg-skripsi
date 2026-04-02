@@ -46,9 +46,15 @@ def main() -> None:
         action="store_true",
         help="Disable class-aware training",
     )
+    def _positive_int(v: str) -> int:
+        n = int(v)
+        if n < 1:
+            raise argparse.ArgumentTypeError(f"must be >= 1, got {n}")
+        return n
+
     t.add_argument(
         "--max-samples",
-        type=int,
+        type=_positive_int,
         default=None,
         metavar="N",
         help="Cap samples per fold for quick tests (e.g. --max-samples 50)",

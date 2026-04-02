@@ -10,7 +10,7 @@ from stardist.models import Config2D, StarDist2D
 
 np.float = float  # NOQA
 
-from data import CELL_TYPES, load_fold
+from data import CELL_TYPES, load_fold_cached
 
 # ── Hyperparameters ───────────────────────────────────────────────────────────
 N_RAYS = 32
@@ -50,6 +50,12 @@ def build_model(use_classes: bool = USE_CLASSES) -> StarDist2D:
         train_steps_per_epoch=STEPS_PER_EPOCH,
         train_batch_size=BATCH_SIZE,
         train_learning_rate=LEARNING_RATE,
+        # Default (None) uses one patch per val image — for 2500 val images this
+        # pre-generates a ~12 GB batch before the first epoch, causing OOM.
+        train_n_val_patches=256,
+        # Disable patch-centre index cache; StarDist docs recommend False for
+        # large datasets (5000 train images × cached indices ≈ ~1 GB over time).
+        train_sample_cache=False,
     )
     return StarDist2D(conf, name=MODEL_NAME, basedir=MODEL_BASEDIR)
 
@@ -63,13 +69,13 @@ def train(
 ) -> None:
     # ── Load data ──
     print("Loading fold1 (train)...")
-    X1, Y1, C1 = load_fold("fold1", use_classes=use_classes, max_samples=max_samples)
+    X1, Y1, C1 = load_fold_cached("fold1", use_classes=use_classes, max_samples=max_samples)
 
     print("Loading fold2 (train)...")
-    X2, Y2, C2 = load_fold("fold2", use_classes=use_classes, max_samples=max_samples)
+    X2, Y2, C2 = load_fold_cached("fold2", use_classes=use_classes, max_samples=max_samples)
 
     print("Loading fold3 (validation)...")
-    X_val, Y_val, C_val = load_fold(
+    X_val, Y_val, C_val = load_fold_cached(
         "fold3", use_classes=use_classes, max_samples=max_samples
     )
 
