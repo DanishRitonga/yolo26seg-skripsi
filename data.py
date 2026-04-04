@@ -1,172 +1,140 @@
-"""PanNuke dataset loading and preprocessing for StarDist training."""
+"""PanNuke dataset loading and YOLO segmentation format conversion."""
 
 from __future__ import annotations
 
 import gc
-import json
+import shutil
 from pathlib import Path
 
+import cv2
 import numpy as np
-from csbdeep.utils import normalize
 from datasets import load_dataset
+from PIL import Image
 from tqdm import tqdm
 
 DATASET_ID = "RationAI/PanNuke"
-DATA_DIR = Path("data")
+DATA_DIR = Path("data") / "pannuke_yolo"
 
 # PanNuke cell-type classes (0-indexed, matching `categories` field values)
 CELL_TYPES = ["Neoplastic", "Inflammatory", "Connective", "Dead", "Epithelial"]
 
 
-# ── Mask utilities ────────────────────────────────────────────────────────────
+# ── Mask → polygon conversion ─────────────────────────────────────────────────
 
 
-def _to_mask_array(mask) -> np.ndarray:
-    """Convert a single binary instance mask (PIL or ndarray) to 2D uint8."""
-    m = np.array(mask)
-    if m.ndim == 3:
-        m = m[..., 0]
-    return m
-
-
-def build_instance_map(
-    instances: list, size: tuple[int, int] = (256, 256)
-) -> np.ndarray:
+def _mask_to_polygons(mask: np.ndarray, img_h: int, img_w: int) -> list[list[float]]:
     """
-    Combine per-nucleus binary masks into a single integer instance label map.
-    Each nucleus gets a unique positive integer ID; background = 0.
-    Overlapping pixels are assigned to the last nucleus in the list.
+    Extract normalised polygon contours from a binary instance mask.
+
+    Returns a list of polygons, each polygon is a flat list [x1, y1, x2, y2, ...]
+    with coordinates normalised to [0, 1].
     """
-    H, W = size
-    instance_map = np.zeros((H, W), dtype=np.int32)
-    for idx, mask in enumerate(instances, start=1):
-        m = _to_mask_array(mask)
-        instance_map[m > 0] = idx
-    return instance_map
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    polygons: list[list[float]] = []
+    for contour in contours:
+        # Need at least 3 points for a valid polygon
+        if contour.shape[0] < 3:
+            continue
+        coords = contour.reshape(-1, 2).astype(np.float64)
+        # Normalise to [0, 1]
+        coords[:, 0] /= img_w
+        coords[:, 1] /= img_h
+        # Clamp to [0, 1]
+        coords = np.clip(coords, 0.0, 1.0)
+        polygons.append(coords.flatten().tolist())
+    return polygons
 
 
-def build_class_dict(categories: list[int]) -> dict[int, int]:
-    """
-    Build a dictionary mapping instance ID to class ID.
-    Values are 1-indexed to match the instance map; 0 = background.
-    """
-    # enumerate(start=1) perfectly matches the instance IDs generated
-    # in your build_instance_map function.
-    return {idx: int(cat) + 1 for idx, cat in enumerate(categories, start=1)}
-
-
-def build_class_map(
+def _write_label_file(
+    path: Path,
     instances: list,
     categories: list[int],
-    size: tuple[int, int] = (256, 256),
-) -> np.ndarray:
-    """
-    Build a per-pixel class label map aligned with the instance map.
-    Values are 1-indexed (1–5 for the 5 cell types); 0 = background.
-    """
-    H, W = size
-    class_map = np.zeros((H, W), dtype=np.int32)
-    for mask, cat in zip(instances, categories):
-        m = _to_mask_array(mask)
-        class_map[m > 0] = int(cat) + 1  # shift to 1-indexed
-    return class_map
-
-
-# ── Disk cache helpers ────────────────────────────────────────────────────────
-
-
-def _fold_dir(fold_name: str) -> Path:
-    return DATA_DIR / fold_name
-
-
-def _cache_exists(fold_name: str) -> bool:
-    d = _fold_dir(fold_name)
-    return (d / "X.npy").exists() and (d / "Y.npy").exists()
-
-
-def _save_fold(
-    fold_name: str,
-    X: list[np.ndarray],
-    Y: list[np.ndarray],
-    C: list[dict[int, int]] | None,
-) -> None:
-    d = _fold_dir(fold_name)
-    d.mkdir(parents=True, exist_ok=True)
-    np.save(d / "X.npy", np.stack(X))
-    np.save(d / "Y.npy", np.stack(Y))
-    if C is not None:
-        with open(d / "C.json", "w") as f:
-            json.dump(C, f)
-    print(f"Cached {fold_name} → {d}/")
-
-
-def _load_fold_from_disk(
-    fold_name: str,
+    img_h: int,
+    img_w: int,
     use_classes: bool,
-) -> tuple[list[np.ndarray], list[np.ndarray], list[dict[int, int]] | None]:
-    d = _fold_dir(fold_name)
-    # mmap_mode='r' pages data from disk on demand — only accessed regions
-    # are loaded into RAM, which acts as lazy loading for StarDist's random
-    # patch sampling during training.
-    X_arr = np.load(d / "X.npy", mmap_mode="r")  # (N, H, W, 3)
-    Y_arr = np.load(d / "Y.npy", mmap_mode="r")  # (N, H, W)
-    X = list(X_arr)
-    Y = list(Y_arr)
+) -> int:
+    """
+    Write a YOLO segmentation label file for one image.
 
-    C: list[dict[int, int]] | None = None
-    if use_classes:
-        c_path = d / "C.json"
-        if c_path.exists():
-            with open(c_path) as f:
-                raw = json.load(f)
-            # JSON round-trips dict keys as strings; restore to int.
-            C = [{int(k): v for k, v in entry.items()} for entry in raw]
+    Each row: `class_id x1 y1 x2 y2 ... xn yn`
 
-    return X, Y, C
+    Returns the number of instances written.
+    """
+    lines: list[str] = []
+    for mask, cat in zip(instances, categories):
+        m = np.array(mask)
+        if m.ndim == 3:
+            m = m[..., 0]
+        m = (m > 0).astype(np.uint8)
+
+        polygons = _mask_to_polygons(m, img_h, img_w)
+        class_id = cat if use_classes else 0
+        for poly in polygons:
+            line = f"{class_id} " + " ".join(f"{v:.6f}" for v in poly)
+            lines.append(line)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n" if lines else "")
+    return len(lines)
 
 
-# ── Dataset loading ───────────────────────────────────────────────────────────
+def _write_dataset_yaml(path: Path, use_classes: bool) -> None:
+    """Generate the Ultralytics dataset.yaml config file."""
+    names = CELL_TYPES if use_classes else ["nucleus"]
+    nc = len(names)
+
+    lines = [
+        f"path: {path.resolve()}",
+        "train: images/train",
+        "val: images/val",
+        f"nc: {nc}",
+        f"names: {names}",
+    ]
+    (path / "dataset.yaml").write_text("\n".join(lines) + "\n")
 
 
-def load_fold(
+# ── Dataset preparation ────────────────────────────────────────────────────────
+
+
+def _split_has_data(split: str) -> bool:
+    """Check whether a split directory already contains images."""
+    img_dir = DATA_DIR / "images" / split
+    if not img_dir.exists():
+        return False
+    return any(img_dir.iterdir())
+
+
+def _process_fold(
     fold_name: str,
-    use_classes: bool = True,
-    max_samples: int | None = None,
-) -> tuple[list[np.ndarray], list[np.ndarray], list[dict[int, int]] | None]:
+    split: str,
+    use_classes: bool,
+    max_samples: int | None,
+) -> None:
     """
-    Load and preprocess one PanNuke fold from Hugging Face (streaming).
-
-    Args:
-        fold_name:    One of "fold1", "fold2", "fold3".
-        use_classes:  If True, also return per-pixel class maps for class-aware training.
-        max_samples:  Optionally cap the number of samples (useful for quick tests).
-
-    Returns:
-        X:       List of float32 RGB images normalized to [0, 1], shape (H, W, 3).
-        Y:       List of int32 instance label maps, shape (H, W).
-        classes: List of class dicts {instance_id: class_id}, or None if use_classes=False.
-                 Class values are 1-indexed; 0 = background.
+    Stream one PanNuke fold and write images + labels to the YOLO dataset dir.
     """
-    if max_samples is not None and max_samples < 1:
-        raise ValueError(f"max_samples must be >= 1, got {max_samples}")
+    img_dir = DATA_DIR / "images" / split
+    lbl_dir = DATA_DIR / "labels" / split
+    img_dir.mkdir(parents=True, exist_ok=True)
+    lbl_dir.mkdir(parents=True, exist_ok=True)
 
-    split = load_dataset(DATASET_ID, split=fold_name, streaming=True)
+    ds = load_dataset(DATASET_ID, split=fold_name, streaming=True)
     if max_samples is not None:
-        split = split.take(max_samples)
+        ds = ds.take(max_samples)
 
-    X: list[np.ndarray] = []
-    Y: list[np.ndarray] = []
-    C: list[dict[int, int]] | None = [] if use_classes else None
+    n_instances = 0
+    n_images = 0
+    for i, sample in enumerate(tqdm(ds, desc=fold_name, unit="img")):
+        img: Image.Image = sample["image"]
+        img_w, img_h = img.size  # PIL gives (W, H)
 
-    for i, sample in enumerate(tqdm(split, desc=fold_name, unit="img")):
-        img = np.array(sample["image"]).astype(np.float32)  # (H, W, 3)
-        img_norm = normalize(img, 1, 99.8, axis=(0, 1))
-        H, W = img_norm.shape[:2]
-        del img
+        # Save image as PNG
+        img_path = img_dir / f"{i:06d}.png"
+        img.save(img_path)
 
-        # NOTE: adjust these field names if the dataset schema differs
-        instances: list = sample["instances"]  # list of binary masks
-        categories: list[int] = sample["categories"]  # list of int 0–4
+        # Write label file
+        instances = sample["instances"]
+        categories = sample["categories"]
 
         if use_classes and len(instances) != len(categories):
             raise ValueError(
@@ -174,51 +142,44 @@ def load_fold(
                 "categories — instance-to-class mapping would be wrong"
             )
 
-        # Pass actual image size so masks with unexpected dimensions raise
-        # a clear error instead of a cryptic numpy boolean-index shape mismatch.
-        inst_map = build_instance_map(instances, size=(H, W))
-        del instances
+        lbl_path = lbl_dir / f"{i:06d}.txt"
+        n_instances += _write_label_file(
+            lbl_path, instances, categories, img_h, img_w, use_classes
+        )
 
-        X.append(img_norm)
-        Y.append(inst_map)
-        if use_classes:
-            C.append(build_class_dict(categories))  # type: ignore[union-attr]
-
-        # gc.collect() every N iterations — reference counting handles most
-        # frees immediately; GC is only needed for any residual PIL cycles.
         if i % 100 == 0:
             gc.collect()
 
-    return X, Y, C
+    n_images = i + 1
+    print(f"  {fold_name} → {split}: {n_images} images, {n_instances} instances")
 
 
-def load_fold_cached(
-    fold_name: str,
+def prepare_yolo_dataset(
     use_classes: bool = True,
     max_samples: int | None = None,
-) -> tuple[list[np.ndarray], list[np.ndarray], list[dict[int, int]] | None]:
+) -> Path:
     """
-    Load a PanNuke fold, using a local disk cache when available.
+    Prepare the full PanNuke YOLO segmentation dataset.
 
-    On first call (or when max_samples is set), downloads and preprocesses
-    from Hugging Face via streaming, then saves the full fold to data/<fold_name>/.
-    On subsequent calls, loads directly from disk using memory-mapped arrays
-    so only the pages touched during training are kept in RAM.
+    fold1 + fold2 → train split
+    fold3         → val split
 
-    Caching is skipped when max_samples is set to avoid storing partial data.
+    Returns the path to dataset.yaml.
     """
-    if max_samples is None and _cache_exists(fold_name):
-        d = _fold_dir(fold_name)
-        if use_classes and not (d / "C.json").exists():
-            # Cache was built with --no-classes; re-download so class data is saved.
-            print(f"Cache for {fold_name} has no class data; re-downloading...")
-        else:
-            print(f"Loading {fold_name} from disk cache ({d})...")
-            return _load_fold_from_disk(fold_name, use_classes)
+    splits = {"train": ["fold1", "fold2"], "val": ["fold3"]}
 
-    X, Y, C = load_fold(fold_name, use_classes=use_classes, max_samples=max_samples)
+    for split, folds in splits.items():
+        if max_samples is None and _split_has_data(split):
+            print(f"Split '{split}' already exists, skipping download.")
+            continue
 
-    if max_samples is None:
-        _save_fold(fold_name, X, Y, C)
+        # Clear existing data if re-downloading
+        for d in [DATA_DIR / "images" / split, DATA_DIR / "labels" / split]:
+            if d.exists():
+                shutil.rmtree(d)
 
-    return X, Y, C
+        for fold in folds:
+            _process_fold(fold, split, use_classes, max_samples)
+
+    _write_dataset_yaml(DATA_DIR, use_classes)
+    return DATA_DIR / "dataset.yaml"

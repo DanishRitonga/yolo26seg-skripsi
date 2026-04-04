@@ -1,4 +1,5 @@
-"""Run StarDist inference on a single image."""
+"""Run YOLO26s-seg inference on a single image."""
+
 from __future__ import annotations
 
 import collections
@@ -6,55 +7,82 @@ import warnings
 from pathlib import Path
 
 import numpy as np
-from csbdeep.utils import normalize
 from PIL import Image
-from stardist.models import StarDist2D
 
-from train import MODEL_BASEDIR, MODEL_NAME
+from train import MODEL_NAME
+
+# Ultralytics saves under runs/segment/{project}/{name}/ by default.
+MODEL_PATH = Path("runs/segment/models") / MODEL_NAME / "weights" / "best.pt"
 
 
-def load_model(name: str = MODEL_NAME, basedir: str = MODEL_BASEDIR) -> StarDist2D:
-    """Load a trained StarDist model from disk."""
-    return StarDist2D(None, name=name, basedir=basedir)
+def load_model(path: Path | str = MODEL_PATH):
+    """Load a trained YOLO segmentation model from disk."""
+    from ultralytics import YOLO
+
+    return YOLO(str(path))
 
 
 def predict(
     image_path: str | Path,
-    model: StarDist2D | None = None,
-    prob_thresh: float | None = None,
-    nms_thresh: float | None = None,
+    model=None,
+    conf: float = 0.25,
+    iou: float = 0.7,
 ) -> tuple[np.ndarray, dict]:
     """
-    Run StarDist inference on a single image file.
+    Run YOLO26s-seg inference on a single image file.
 
     Args:
-        image_path:  Path to any image readable by PIL (PNG, TIFF, JPG, …).
-        model:       Pre-loaded model; loads the default trained model if None.
-        prob_thresh: Detection probability threshold (uses model default if None).
-        nms_thresh:  NMS IoU threshold (uses model default if None).
+        image_path:  Path to any image readable by PIL (PNG, TIFF, JPG, ...).
+        model:       Pre-loaded YOLO model; loads the default trained model if None.
+        conf:        Confidence threshold for detections.
+        iou:         NMS IoU threshold.
 
     Returns:
         labels:  (H, W) int32 instance label map.
-        details: Dict containing 'coord', 'points', 'prob', and optionally 'class_id'.
+        details: Dict containing 'class_id', 'conf', 'points', and 'masks'.
     """
-    if prob_thresh is not None and not (0 < prob_thresh < 1):
-        raise ValueError(f"prob_thresh must be in (0, 1), got {prob_thresh}")
-    if nms_thresh is not None and not (0 < nms_thresh < 1):
-        raise ValueError(f"nms_thresh must be in (0, 1), got {nms_thresh}")
-
     if model is None:
         model = load_model()
 
-    img = np.array(Image.open(image_path).convert("RGB")).astype(np.float32)
-    img_norm = normalize(img, 1, 99.8, axis=(0, 1))
+    results = model(image_path, conf=conf, iou=iou, verbose=False)
+    result = results[0]
 
-    kwargs: dict = {}
-    if prob_thresh is not None:
-        kwargs["prob_thresh"] = prob_thresh
-    if nms_thresh is not None:
-        kwargs["nms_thresh"] = nms_thresh
+    img = np.array(Image.open(image_path).convert("RGB"))
+    H, W = img.shape[:2]
+    labels = np.zeros((H, W), dtype=np.int32)
 
-    labels, details = model.predict_instances(img_norm, **kwargs)
+    class_ids: list[int] = []
+    confs: list[float] = []
+    points: list[tuple[int, int]] = []
+
+    if result.masks is not None:
+        masks_data = result.masks.data.cpu().numpy()  # (N, H, W)
+        boxes = result.boxes
+        for idx in range(len(masks_data)):
+            mask = masks_data[idx]
+            # Resize mask to image size if needed
+            if mask.shape != (H, W):
+                from PIL import Image as PILImage
+
+                mask_pil = PILImage.fromarray((mask * 255).astype(np.uint8))
+                mask_pil = mask_pil.resize((W, H), resample=PILImage.NEAREST)
+                mask = np.array(mask_pil) > 127
+
+            labels[mask] = idx + 1
+
+            cls_id = int(boxes.cls[idx])
+            class_ids.append(cls_id)
+            confs.append(float(boxes.conf[idx]))
+
+            # Bounding box centre as the "point"
+            x1, y1, x2, y2 = boxes.xyxy[idx].cpu().numpy()
+            points.append((int((x1 + x2) / 2), int((y1 + y2) / 2)))
+
+    details: dict = {
+        "class_id": np.array(class_ids),
+        "prob": np.array(confs),
+        "points": np.array(points) if points else np.empty((0, 2)),
+    }
     return labels, details
 
 
@@ -65,11 +93,12 @@ def summarize(labels: np.ndarray, details: dict) -> None:
     n_nuclei = int(labels.max())
     print(f"Detected {n_nuclei} nucleus instance(s).")
 
-    if "class_id" in details and len(details["class_id"]) > 0:
-        counts = collections.Counter(details["class_id"])
+    class_ids = details.get("class_id")
+    if class_ids is not None and len(class_ids) > 0:
+        counts = collections.Counter(int(c) for c in class_ids)
         print("Cell-type breakdown:")
         for cls_id in sorted(counts):
-            name = CELL_TYPES[cls_id - 1] if 1 <= cls_id <= len(CELL_TYPES) else f"class_{cls_id}"
+            name = CELL_TYPES[cls_id] if 0 <= cls_id < len(CELL_TYPES) else f"class_{cls_id}"
             print(f"  {name}: {counts[cls_id]}")
 
 
@@ -78,26 +107,22 @@ def summarize(labels: np.ndarray, details: dict) -> None:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="StarDist inference on a single image")
+    parser = argparse.ArgumentParser(description="YOLO26s-seg inference on a single image")
     parser.add_argument("image", help="Path to input image")
     parser.add_argument("--output", "-o", help="Save instance label map as TIFF")
-    parser.add_argument("--model-name", default=MODEL_NAME)
-    parser.add_argument("--model-basedir", default=MODEL_BASEDIR)
-    parser.add_argument("--prob-thresh", type=float, default=None)
-    parser.add_argument("--nms-thresh", type=float, default=None)
+    parser.add_argument("--model-path", default=str(MODEL_PATH))
+    parser.add_argument("--conf", type=float, default=0.25, help="Confidence threshold")
+    parser.add_argument("--iou", type=float, default=0.7, help="NMS IoU threshold")
     args = parser.parse_args()
 
-    m = load_model(name=args.model_name, basedir=args.model_basedir)
-    labels, details = predict(
-        args.image, model=m,
-        prob_thresh=args.prob_thresh,
-        nms_thresh=args.nms_thresh,
-    )
+    m = load_model(args.model_path)
+    labels, details = predict(args.image, model=m, conf=args.conf, iou=args.iou)
 
     summarize(labels, details)
 
     if args.output:
         from tifffile import imwrite
+
         n_instances = int(labels.max())
         if n_instances > np.iinfo(np.uint16).max:
             warnings.warn(
