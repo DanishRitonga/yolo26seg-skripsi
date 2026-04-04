@@ -18,7 +18,7 @@ MODEL_NAMES = {
 }
 MODEL_BASEDIR = Path("models")
 TRAIN_EPOCHS = 200
-BATCH_SIZE = 4
+BATCH_SIZE = -1  # auto-detect max batch size that fits VRAM
 LEARNING_RATE = 3e-4
 IMGSZ = 256
 
