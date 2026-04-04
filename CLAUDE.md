@@ -56,14 +56,18 @@ Four files, no packages:
 
 ```
 data/pannuke_yolo/
-  images/train/*.png          (actual images, fold1+fold2)
-  images/val/*.png            (fold3)
+  images/train/*.png          (actual images, fold1)
+  images/val/*.png            (fold2)
+  images/test/*.png           (fold3)
   images/det_train/           (symlinks → ../train/)
   images/det_val/             (symlinks → ../val/)
+  images/det_test/            (symlinks → ../test/)
   labels/train/*.txt          (segmentation: class_id x1 y1 ... xn yn)
   labels/val/*.txt
+  labels/test/*.txt
   labels/det_train/*.txt      (detection: class_id cx cy w h)
   labels/det_val/*.txt
+  labels/det_test/*.txt
   dataset.yaml                (segmentation config)
   dataset_det.yaml            (detection config)
 ```

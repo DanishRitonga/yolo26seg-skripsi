@@ -128,17 +128,18 @@ def _write_yaml(path: Path, use_classes: bool, label_dir_prefix: str) -> Path:
     yaml_name = "dataset.yaml" if label_dir_prefix == "labels" else "dataset_det.yaml"
 
     if label_dir_prefix == "labels":
-        train_dir, val_dir = "images/train", "images/val"
+        img_dirs = ("images/train", "images/val", "images/test")
     else:
         # Detection labels live in labels/det_{split}/, so images must be
         # under images/det_{split}/ for Ultralytics' "images → labels" path
         # replacement to find them.
-        train_dir, val_dir = "images/det_train", "images/det_val"
+        img_dirs = ("images/det_train", "images/det_val", "images/det_test")
 
     lines = [
         f"path: {path.resolve()}",
-        f"train: {train_dir}",
-        f"val: {val_dir}",
+        f"train: {img_dirs[0]}",
+        f"val: {img_dirs[1]}",
+        f"test: {img_dirs[2]}",
         f"nc: {nc}",
         f"names: {names}",
     ]
@@ -239,14 +240,15 @@ def prepare_yolo_dataset(
     """
     Prepare the PanNuke YOLO dataset (both segmentation and detection labels).
 
-    fold1 + fold2 → train split
-    fold3         → val split
+    fold1 → train split
+    fold2 → val split
+    fold3 → test split
 
     Returns dict with paths to both dataset yaml files:
         {"segment": Path("data/pannuke_yolo/dataset.yaml"),
          "detect":  Path("data/pannuke_yolo/dataset_det.yaml")}
     """
-    splits = {"train": ["fold1", "fold2"], "val": ["fold3"]}
+    splits = {"train": ["fold1"], "val": ["fold2"], "test": ["fold3"]}
 
     for split, folds in splits.items():
         if max_samples is None and _split_has_data(split):
@@ -264,8 +266,8 @@ def prepare_yolo_dataset(
         for fold in folds:
             _process_fold(fold, split, use_classes, max_samples)
 
-    # Create symlinks so Ultralytics can find labels_det/ via images_det/
-    for split in ("train", "val"):
+    # Create symlinks so Ultralytics can find det labels via images/det_{split}/
+    for split in ("train", "val", "test"):
         _ensure_image_symlinks(DATA_DIR, split)
 
     # Write both yaml configs
