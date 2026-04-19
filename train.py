@@ -16,6 +16,8 @@ MODEL_NAMES = {
     "segment": "pannuke_yolo26seg",
     "detect": "pannuke_yolo26det",
 }
+REPO_ROOT = Path(__file__).resolve().parent
+RUNS_DIR = REPO_ROOT / "runs"
 MODEL_BASEDIR = Path("models")
 TRAIN_EPOCHS = 200
 BATCH_SIZE = -1  # auto-detect max batch size that fits VRAM
@@ -57,13 +59,16 @@ def train(
     )
 
     # ── Train ──
+    project_dir = RUNS_DIR / task / MODEL_BASEDIR
+    project_dir.mkdir(parents=True, exist_ok=True)
+
     model.train(
         data=str(dataset_yaml),
         epochs=TRAIN_EPOCHS,
         imgsz=IMGSZ,
         batch=BATCH_SIZE,
         lr0=LEARNING_RATE,
-        project=str(MODEL_BASEDIR),
+        project=str(project_dir),
         name=model_name,
         exist_ok=True,
         # Disable mosaic — PanNuke nuclei are small and dense; cutting/pasting
@@ -71,14 +76,11 @@ def train(
         mosaic=0.0,
     )
 
-    # Ultralytics saves to runs/{task}/{project}/{name}/ internally
-    actual_path = (
-        Path(f"runs/{task}") / MODEL_BASEDIR / model_name / "weights" / "best.pt"
-    )
+    actual_path = project_dir / model_name / "weights" / "best.pt"
     if actual_path.exists():
         print(f"\nDone. Best model saved to {actual_path}")
     else:
-        print(f"\nDone. Model saved under runs/{task}/{MODEL_BASEDIR}/{model_name}/")
+        print(f"\nDone. Model saved under {project_dir / model_name}/")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

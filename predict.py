@@ -9,12 +9,11 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from train import MODEL_BASEDIR, MODEL_NAMES
+from train import MODEL_BASEDIR, MODEL_NAMES, RUNS_DIR
 
-# Ultralytics saves under runs/{task}/{project}/{name}/ by default.
 MODEL_PATHS = {
-    "segment": Path("runs/segment") / MODEL_BASEDIR / MODEL_NAMES["segment"] / "weights" / "best.pt",
-    "detect": Path("runs/detect") / MODEL_BASEDIR / MODEL_NAMES["detect"] / "weights" / "best.pt",
+    task: RUNS_DIR / task / MODEL_BASEDIR / MODEL_NAMES[task] / "weights" / "best.pt"
+    for task in ("segment", "detect")
 }
 
 

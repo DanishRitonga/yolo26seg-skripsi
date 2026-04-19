@@ -46,6 +46,6 @@ Four source files at repo root, no packages:
 - **Both label formats are always written.** `data.py` writes segmentation polygons and detection bboxes in one pass. Switching `--task` does not re-download data.
 - **`data/` is gitignored** — the full dataset and model outputs under `runs/` are not committed.
 - **Mosaic augmentation is disabled** (`mosaic=0.0` in `train.py:71`) — PanNuke nuclei are small and dense; mosaic creates unrealistic arrangements.
-- **Model paths**: `runs/{segment|detect}/models/pannuke_yolo26{seg|det}/weights/best.pt`
+- **Model paths** use `REPO_ROOT / "runs"` (absolute) to avoid Ultralytics' global `runs_dir` setting bleeding across projects.
 - **Batch size is auto** (`batch=-1`) — Ultralytics picks the largest batch that fits in VRAM.
 - **Pretrained weights** `yolo26s-seg.pt` and `yolo26s.pt` exist at repo root; these are Ultralytics pretrained checkpoints, not trained models.

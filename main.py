@@ -5,15 +5,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from train import MODEL_BASEDIR, MODEL_NAMES
+from train import MODEL_BASEDIR, MODEL_NAMES, RUNS_DIR
 
-# Default to segmentation model path
 MODEL_PATH = (
-    Path("runs/segment")
-    / MODEL_BASEDIR
-    / MODEL_NAMES["segment"]
-    / "weights"
-    / "best.pt"
+    RUNS_DIR / "segment" / MODEL_BASEDIR / MODEL_NAMES["segment"] / "weights" / "best.pt"
 )
 
 
@@ -34,9 +29,8 @@ def cmd_predict(args: argparse.Namespace) -> None:
     if args.model_path:
         model_path = args.model_path
     else:
-        runs_dir = Path("runs") / args.task
         model_path = (
-            runs_dir / MODEL_BASEDIR / MODEL_NAMES[args.task] / "weights" / "best.pt"
+            RUNS_DIR / args.task / MODEL_BASEDIR / MODEL_NAMES[args.task] / "weights" / "best.pt"
         )
 
     model = load_model(model_path)
